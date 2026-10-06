@@ -1,15 +1,16 @@
 {
   "name": "Batera no Click",
   "short_name": "Batera no Click",
-  "description": "Metrônomo e treinador de rudimentos pra baterista",
+  "description": "Treino diário de rudimentos com avaliação de timing pra baterista",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#14120F",
-  "theme_color": "#14120F",
+  "background_color": "#110F17",
+  "theme_color": "#110F17",
   "lang": "pt-BR",
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }
