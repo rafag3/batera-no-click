@@ -157,11 +157,22 @@ export function applyProva(state, trail, stage, scores) {
   return { avg, stars, gotNew, unlockedTrail };
 }
 
-// Diagnóstico inicial: define a trilha de partida
+// Diagnóstico inicial: define a trilha de partida.
+// Refazer o diagnóstico nunca rebaixa: quem já liberou uma trilha mais alta continua nela
+// (pra voltar a uma trilha anterior existe a escolha manual na aba Trilha).
 export function applyPlacement(state, scores) {
+  const wasPlaced = state.placed;
   state.placed = true;
   const ok = scores.length && scores.every(s => s >= 85);
   if (ok && !state.unlocked.includes('intermediario')) state.unlocked.push('intermediario');
-  state.trail = ok ? 'intermediario' : 'iniciante';
-  return getTrail(state.trail);
+  const placed = ok ? 'intermediario' : 'iniciante';
+  if (!wasPlaced || trailIndex(placed) > trailIndex(state.trail)) state.trail = placed;
+  return { trail: getTrail(state.trail), placed: getTrail(placed) };
+}
+
+// Troca manual da trilha ativa (só entre trilhas já liberadas)
+export function chooseTrail(state, id) {
+  if (!state.unlocked.includes(id) || state.trail === id) return false;
+  state.trail = id;
+  return true;
 }

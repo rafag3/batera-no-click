@@ -1,9 +1,15 @@
 // Aba Metrônomo: click com clock da Web Audio, tap tempo, speed trainer e BPM por upload.
 import { ensureAC, ctx, clickAt, claim, release, setSound, setVolume, testBeep } from './audio.js';
+import { keepAwake, allowSleep } from './wakelock.js';
 
 const $ = id => document.getElementById(id);
 let bpm = 120, running = false, sig = 4, sub = 1;
 let nextT = 0, beat = 0, subI = 0, timer = null, uiQ = [], trainerBars = 0;
+
+// Compassos em /8: o pulso forte cai no início de cada grupo (6/8 = 3+3, 7/8 = 2+2+3).
+// Nos demais, todo tempo é forte.
+const GROUP_STARTS = { 6: [0, 3], 7: [0, 2, 4] };
+const strongBeat = b => (GROUP_STARTS[sig] ? GROUP_STARTS[sig].includes(b) : true);
 
 function setBpm(v) { bpm = Math.min(300, Math.max(20, Math.round(v))); $('bpmNum').textContent = bpm; }
 
@@ -11,7 +17,7 @@ function buildPads() {
   const c = $('pads'); c.innerHTML = '';
   for (let b = 0; b < sig; b++) for (let s = 0; s < sub; s++) {
     const d = document.createElement('div');
-    d.className = 'pad' + (s === 0 ? ' beat' : ''); d.dataset.i = b * sub + s; c.appendChild(d);
+    d.className = 'pad' + (s === 0 && strongBeat(b) ? ' beat' : ''); d.dataset.i = b * sub + s; c.appendChild(d);
   }
 }
 
@@ -26,7 +32,7 @@ function trainerTick() {
 function schedule() {
   const AC = ctx();
   while (nextT < AC.currentTime + 0.12) {
-    const isOne = beat === 0 && subI === 0, isBeat = subI === 0;
+    const isOne = beat === 0 && subI === 0, isBeat = subI === 0 && strongBeat(beat);
     if (isOne && $('chkAccent').checked) clickAt(nextT, 'hi', 1);
     else if (isBeat) clickAt(nextT, 'mid', 0.9);
     else clickAt(nextT, 'low', 0.55);
@@ -57,12 +63,14 @@ function start() {
   running = true; beat = 0; subI = 0; uiQ = [];
   nextT = AC.currentTime + 0.08;
   timer = setInterval(schedule, 25); schedule(); uiLoop();
+  keepAwake('metro');
   $('btnStart').textContent = 'Parar'; $('btnStart').classList.add('stop');
 }
 
 export function stop() {
   if (!running) return;
   running = false; clearInterval(timer); uiQ = [];
+  allowSleep('metro');
   if (lastPad) lastPad.classList.remove('hit', 'one');
   release('metro');
   $('btnStart').textContent = 'Tocar'; $('btnStart').classList.remove('stop');
@@ -131,6 +139,15 @@ export function initMetronome() {
     }
     clickAt(AC.currentTime, 'mid', 0.7);
   };
+
+  // atalhos de teclado (desktop): espaço toca/para, T marca o tap tempo
+  document.addEventListener('keydown', e => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || !$('v-metro').classList.contains('on')) return;
+    // campos de formulário ficam com o teclado; no botão Tocar o espaço já aciona o clique nativo
+    if (e.target.closest('input, select, textarea, summary') || e.target === $('btnStart')) return;
+    if (e.code === 'Space') { e.preventDefault(); running ? stop() : start(); }
+    else if (e.code === 'KeyT') $('btnTap').click();
+  });
 
   // upload
   $('fileAudio').onchange = async e => {

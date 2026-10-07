@@ -1,11 +1,12 @@
 // Batera no Click — orquestração das telas e do fluxo de treino.
 import { CATEGORIES, getRud } from './rudiments-data.js';
 import { TRAILS, getTrail, findStage } from './trails.js';
-import { scoreTake, describe, analyzeSilent, analyzePlay } from './scoring.js';
+import { scoreTake, describe, analyzeSilent, analyzePlay, resolveCalibration } from './scoring.js';
 import {
-  newState, levelInfo, dayKey, currentStreak, applyScored, stageWork, stageUnlocked,
-  currentStage, trailProgress, applyStageResult, applyProva, applyPlacement,
+  newState, levelInfo, dayKey, dayDiff, currentStreak, applyScored, stageWork, stageUnlocked,
+  currentStage, trailProgress, applyStageResult, applyProva, applyPlacement, chooseTrail,
 } from './progress.js';
+import { keepAwake, allowSleep } from './wakelock.js';
 import { buildWorkout, cleanHistory } from './workout.js';
 import { kvGet, kvSet, addSession, allSessions, clearAll, isVolatile, requestPersist } from './storage.js';
 import { ensureAC, stopAll } from './audio.js';
@@ -17,7 +18,12 @@ import { FEEDBACK_KEY } from './config.js';
 const $ = s => document.querySelector(s);
 const today = () => dayKey();
 let state = newState(), sessions = [];
-let view = 'hoje', trailView = null, rudDetail = null, rudBpm = 60, volatile = false, introTimer = null;
+let view = 'hoje', trailView = null, rudDetail = null, rudBpm = 60, volatile = false, introTimer = null, feedbackFrom = 'perfil';
+
+// Eventos anônimos de uso (Vercel Web Analytics). Sem dado pessoal: só o nome do passo e números.
+function track(name, data) {
+  try { if (window.va) window.va('event', data ? { name, data } : { name }); } catch (e) { /* ignora */ }
+}
 
 // texto vindo de backup importado nunca entra cru no HTML
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
@@ -121,7 +127,8 @@ function renderHoje() {
   const allDone = nextIdx < 0;
   const anyDone = w.blocks.some(b => b.done);
   const mins = w.blocks.reduce((a, b) => a + blockMinutes(b), 0);
-  let h = '';
+  // duas colunas no desktop; no celular a ordem visual é dada por `order` no CSS
+  let h = '', side = '';
 
   if ((IS_IOS || IS_ANDROID) && !IS_STANDALONE) {
     h += `<div class="card banner"><div style="flex:1"><b>Instale o app na tela inicial</b>
@@ -137,7 +144,7 @@ function renderHoje() {
       <button class="btn-ghost" data-act="skipdiag">Pular e começar no Iniciante</button></div></div>`;
   }
 
-  h += `<div class="card">
+  side += `<div class="card lv-card">
     <div class="lv-row"><span class="chip-lv">NÍVEL ${lv.level} · ${tr.name.toUpperCase()}</span>
     <span class="muted small" style="font-weight:600">${lv.into} / ${lv.need} XP</span></div>
     <div class="xpbar"><div style="width:${Math.round((lv.into / lv.need) * 100)}%"></div></div>
@@ -164,7 +171,7 @@ function renderHoje() {
       <p class="muted small" style="margin-top:3px">${getRud(last.rud).n}: ${esc(last.diagText)}</p></div></div>`;
   }
 
-  h += `<div class="sec-head"><span class="kicker">BPM LIMPO</span><span class="muted small">últimos 30 dias</span></div>
+  side += `<div class="clean-sec"><div class="sec-head"><span class="kicker">BPM LIMPO</span><span class="muted small">últimos 30 dias</span></div>
     <div class="clean-grid">${tr.tracked.map(id => {
       const ch = cleanHistory(sessions, id, today());
       const name = getRud(id).n.replace(' Stroke', '').replace(' Open Roll', '').replace(' Roll', '');
@@ -173,16 +180,16 @@ function renderHoje() {
         <div class="d${ch.delta ? '' : ' zero'}">${ch.current ? (ch.delta ? '+' + ch.delta : 'estável') : 'sem registro'}</div></div>`;
     }).join('')}</div>
     <p class="muted small" style="margin-top:10px">BPM limpo é o maior andamento em que você tocou o rudimento com 85 ou mais de precisão.</p>
-    <div style="text-align:center;margin-top:18px"><button class="link-btn" data-act="feedback">Achou um erro ou tem uma sugestão? Fale comigo</button></div>`;
+    ${FEEDBACK_KEY ? '<div style="text-align:center;margin-top:18px"><button class="link-btn" data-act="feedback">Achou um erro ou tem uma sugestão? Fale comigo</button></div>' : ''}</div>`;
 
-  el.innerHTML = h;
+  el.innerHTML = `<div class="hoje-cols"><div class="col">${h}</div><div class="col">${side}</div></div>`;
   el.onclick = e => {
     const a = e.target.closest('[data-act]'); if (!a) return;
     if (a.dataset.act === 'daily') runDaily();
     if (a.dataset.act === 'diag') runDiagnostic();
-    if (a.dataset.act === 'skipdiag') { state.placed = true; save(); render(); }
-    if (a.dataset.act === 'install') show('intro', 'install');
-    if (a.dataset.act === 'feedback') show('feedback');
+    if (a.dataset.act === 'skipdiag') { state.placed = true; save(); track('diag_skip'); render(); }
+    if (a.dataset.act === 'install') { track('install_help'); show('intro', 'install'); }
+    if (a.dataset.act === 'feedback') { feedbackFrom = 'hoje'; show('feedback'); }
   };
 }
 
@@ -203,6 +210,10 @@ function renderTrilha() {
     <p class="muted small" style="margin-top:6px;font-weight:600">${pg.done} de ${pg.totalStages} etapas, ${pg.stars} de ${pg.totalStars} estrelas</p>
     <div class="xpbar" style="height:8px;margin-top:10px"><div style="width:${Math.round((pg.done / pg.totalStages) * 100)}%;background:${tr.color}"></div></div></div>`;
   if (!open) h += `<div class="card"><b>Trilha bloqueada</b><p class="muted small" style="margin-top:4px">Passe na prova da trilha anterior pra liberar.</p></div>`;
+  else if (tr.id === state.trail) h += `<p class="muted small" style="margin-top:12px">Esta é a sua trilha ativa: o treino do dia segue as etapas dela.</p>`;
+  else h += `<div class="card"><b>Treinar nesta trilha?</b>
+    <p class="muted small" style="margin-top:4px">Hoje o treino do dia segue a trilha ${getTrail(state.trail).name}. Você pode trocar quando quiser: o progresso das duas fica salvo.</p>
+    <div class="stack"><button class="btn-ghost" data-act="usetrail">Usar a trilha ${tr.name} no treino do dia</button></div></div>`;
   h += `<div class="stages" style="--lv:${tr.color}">${tr.stages.map((s, i) => {
     const w = state.stages[s.id], un = stageUnlocked(state, tr, i);
     const cls = !un ? 'lock' : i === cur ? 'cur' : w && w.stars > 0 ? 'done' : '';
@@ -220,6 +231,14 @@ function renderTrilha() {
   el.onclick = e => {
     const t = e.target.closest('[data-trail]');
     if (t) { trailView = t.dataset.trail; renderTrilha(); return; }
+    if (e.target.closest('[data-act=usetrail]') && chooseTrail(state, tr.id)) {
+      // treino de hoje ainda não começado: remonta já na trilha nova; senão a troca vale a partir de amanhã
+      const started = state.today && state.today.blocks.some(b => b.done);
+      if (!started) state.today = null;
+      save(); track('trail_switch', { trail: tr.id });
+      toast(started ? `Trilha ${tr.name} ativa a partir do treino de amanhã` : `Treino do dia agora segue a trilha ${tr.name}`);
+      render(); return;
+    }
     const s = e.target.closest('[data-stage]');
     if (s && !s.disabled) runStage(s.dataset.stage);
   };
@@ -234,11 +253,11 @@ function renderRud() {
   if (!rudDetail) {
     el.innerHTML = `<div class="h1">Rudimentos</div>
       <p class="muted small" style="margin-top:6px">Os 40 rudimentos PAS e dois exercícios de base. Toque em um pra ouvir, ver o sticking e avaliar seu timing.</p>
-      ${CATEGORIES.map(c => `<div class="cat">${c.cat.toUpperCase()}</div>${c.list.map(r => {
+      ${CATEGORIES.map(c => `<div class="cat">${c.cat.toUpperCase()}</div><div class="rud-list">${c.list.map(r => {
         const rec = state.records[r.id];
         const tag = !r.scorable ? '<span class="tag">treino livre</span>' : rec && rec.clean ? `<span class="tag rec">${rec.clean} limpo</span>` : '';
         return `<button class="rud-item" data-rud="${r.id}"><div><b>${r.n}</b><span>${r.pt}</span></div>${tag}</button>`;
-      }).join('')}`).join('')}`;
+      }).join('')}</div>`).join('')}`;
     el.onclick = e => {
       const b = e.target.closest('[data-rud]'); if (!b) return;
       rudDetail = b.dataset.rud;
@@ -252,14 +271,17 @@ function renderRud() {
   el.innerHTML = `<button class="back" data-act="back">‹ Rudimentos</button>
     <div class="h1" style="margin-top:4px">${r.n}</div>
     <p class="muted small" style="margin-top:4px">${r.pt}, ${spbName(r.spb)}</p>
+    <div class="rud-detail"><div>
     <div class="stage" id="rStage"></div>
     <div class="sheet"><div class="cells" id="rCells"></div>
       <div class="legend"><span><b class="r">R</b> direita</span><span><b class="l">L</b> esquerda</span><span>&gt; acento</span><span>letra pequena: apojatura</span></div></div>
+    </div><div>
     <div class="bpm-ctl"><button data-d="-5">−5</button><button data-d="-1">−1</button>
       <div class="v" id="rBpm">${rudBpm}<small>BPM</small></div><button data-d="1">+1</button><button data-d="5">+5</button></div>
     <div class="stack"><button class="btn-ghost" data-act="listen" id="rListen">Ouvir</button>
     ${r.scorable ? '<button class="btn-primary" data-act="eval">Avaliar meu timing</button>'
-      : '<p class="muted small">Este rudimento tem apojaturas ou buzz, que o microfone não avalia com precisão. Use o guia pra praticar.</p>'}</div>`;
+      : '<p class="muted small">Este rudimento tem apojaturas ou buzz, que o microfone não avalia com precisão. Use o guia pra praticar.</p>'}</div>
+    </div></div>`;
   const cells = renderCells($('#rCells'), r);
   const stg = renderStage($('#rStage'));
   el.onclick = e => {
@@ -312,17 +334,17 @@ async function renderPerfil() {
       <button class="btn-ghost" data-act="rediag">Refazer diagnóstico</button>
       <button class="btn-ghost danger" data-act="wipe">Apagar meus dados</button></div></div>
     <div class="card"><div class="kicker">SOBRE</div>
-      <div class="stack"><button class="btn-ghost" data-act="feedback">Enviar feedback</button>
+      <div class="stack">${FEEDBACK_KEY ? '<button class="btn-ghost" data-act="feedback">Enviar feedback</button>' : ''}
       <button class="btn-ghost" data-act="intro">Conhecer o app</button></div></div>
     <div class="card"><div class="kicker">PRIVACIDADE</div>
-      <p class="muted small" style="margin-top:8px">O áudio do microfone é analisado na hora e descartado: nada é gravado nem enviado. O progresso fica só neste aparelho. As visitas são contadas de forma anônima e sem cookies (Vercel Web Analytics). O feedback só sai quando você toca em Enviar, e vai por e-mail pelo serviço Web3Forms.</p></div>`;
+      <p class="muted small" style="margin-top:8px">O áudio do microfone é analisado na hora e descartado: nada é gravado nem enviado. O progresso fica só neste aparelho. As visitas e o uso (por exemplo, treino concluído e nota da avaliação) são contados de forma anônima e sem cookies (Vercel Web Analytics), sem nada que identifique você. ${FEEDBACK_KEY ? 'O feedback só sai quando você toca em Enviar, e vai por e-mail pelo serviço Web3Forms.' : ''}</p></div>`;
   const inp = $('#importFile');
   inp.onchange = () => { const f = inp.files[0]; inp.value = ''; if (f) importBackup(f); };
   el.onclick = async e => {
     const a = e.target.closest('[data-act]'); if (!a) return;
     if (a.dataset.act === 'calib') runCalibOnly();
     if (a.dataset.act === 'rediag') runDiagnostic();
-    if (a.dataset.act === 'feedback') show('feedback');
+    if (a.dataset.act === 'feedback') { feedbackFrom = 'perfil'; show('feedback'); }
     if (a.dataset.act === 'intro') show('intro');
     if (a.dataset.act === 'export') exportBackup();
     if (a.dataset.act === 'import') $('#importFile').click();
@@ -339,11 +361,12 @@ function openOverlay() {
   S.ctl = new AbortController();
   $('#session').hidden = false; document.body.style.overflow = 'hidden';
   $('#sDots').innerHTML = ''; $('#sStep').textContent = '';
+  keepAwake('session');
 }
 function closeOverlay() {
   if (S.ctl) S.ctl.abort();
   S.waiters.forEach(r => r('close')); S.waiters.clear();
-  stopAll(); releaseMic();
+  stopAll(); releaseMic(); allowSleep('session');
   $('#session').hidden = true; document.body.style.overflow = '';
   render();
 }
@@ -388,8 +411,12 @@ async function calibrate() {
   }
   for (;;) {
     $('#sSub').textContent = 'Passo 1 de 2: fique em silêncio. O app toca 6 clicks pra medir se o som do alto-falante chega no microfone.';
+    $('#sResult').innerHTML = `<div class="card tip"><b>Pad ou bateria?</b>
+      <p class="muted small" style="margin-top:4px">No pad, o alto-falante do celular basta. Na bateria acústica, use fone com fio: no volume da bateria o click do alto-falante some. Evite fone Bluetooth, que atrasa o som e piora a avaliação.</p>
+      <p class="muted small" style="margin-top:6px">Trocou de fone ou de aparelho? Calibre de novo pelo Perfil.</p></div>`;
     setStatus('');
     if ((await choose([{ id: 'go', label: 'Começar', primary: true }])) !== 'go') return false;
+    $('#sResult').innerHTML = '';
     setStatus('Silêncio…');
     const r1 = await runClicks(6, 100, { signal: S.ctl.signal });
     if (!r1) return false;
@@ -400,16 +427,24 @@ async function calibrate() {
     if ((await choose([{ id: 'go', label: 'Começar', primary: true }])) !== 'go') return false;
     const r2 = await runClicks(8, 90, { signal: S.ctl.signal, onClick: i => setStatus(String(i + 1), 'count') });
     if (!r2) return false;
-    const off = analyzePlay(r2.clickTimes, r2.onsets, leak);
-    if (off == null || Math.abs(off) > 0.3) {
-      setStatus('Detectei poucos toques. Toque mais firme, com o celular perto do pad.');
+    const cal = resolveCalibration(analyzePlay(r2.clickTimes, r2.onsets, leak), leak);
+    if (!cal || Math.abs(cal.offset) > 0.3) {
+      setStatus(cal ? 'A latência passou de 300 ms: provavelmente é fone Bluetooth. Use fone com fio ou o alto-falante e repita.'
+        : 'Detectei poucos toques. Toque mais firme, com o celular perto do pad.');
       if ((await choose([{ id: 'retry', label: 'Repetir calibração', primary: true }])) !== 'retry') return false;
       continue;
     }
-    state.calib = { offset: off, leakLatency: leak.leakLatency, leakPeak: leak.leakPeak, at: Date.now() };
+    state.calib = { offset: cal.offset, source: cal.source, biasMs: cal.biasMs, leakLatency: leak.leakLatency, leakPeak: leak.leakPeak, at: Date.now() };
     await save();
-    $('#sSub').textContent = `Pronto. Latência compensada: ${Math.round(off * 1000)} ms.` +
-      (leak.leakLatency != null ? ' O click está vazando do alto-falante pro microfone. O app descarta esse som, mas com fone com fio a avaliação fica mais precisa.' : '');
+    track('calib_done', { source: cal.source, ms: Math.round(cal.offset * 1000) });
+    const notes = [];
+    if (cal.biasMs != null && Math.abs(cal.biasMs) >= 15) {
+      notes.push(`Na calibração você tocou em média ${Math.abs(cal.biasMs)} ms ${cal.biasMs < 0 ? 'adiantado' : 'atrasado'}. Isso não entra na compensação: o app mediu a latência pelo próprio click, então a avaliação vai mostrar essa tendência.`);
+    }
+    if (leak.leakLatency != null) notes.push('O click está vazando do alto-falante pro microfone. O app descarta esse som, mas com fone com fio a avaliação fica mais precisa.');
+    if (cal.source === 'play' && cal.offset > 0.15) notes.push('A latência está alta, o que é típico de fone Bluetooth. Com fone com fio a avaliação fica mais precisa.');
+    $('#sSub').textContent = `Pronto. Latência compensada: ${Math.round(cal.offset * 1000)} ms.`;
+    $('#sResult').innerHTML = notes.map(n => `<p class="muted small" style="margin-top:8px">${n}</p>`).join('');
     setStatus('');
     return (await choose([{ id: 'ok', label: 'Continuar', primary: true }])) === 'ok';
   }
@@ -479,6 +514,7 @@ async function recordSession(kind, rud, bpm, res, stageId = null) {
     diagTitle: diag.title, diagText: diag.text, stageId, gap: res.gap || null,
   };
   const gain = applyScored(state, sess, today());
+  track('take', { kind, score: res.score, bpm });
   sess.id = await addSession(sess);
   sessions.push(sess);
   await save();
@@ -520,7 +556,8 @@ function showResult(res, rud, { gain, diag, stageInfo }) {
       <div class="score" style="color:${scoreColor(res.score)}">${res.score}</div></div>${starBox}</div>
       <div class="chart-legend"><span class="late">atrasado</span><span>desvio por nota</span></div>
       <canvas class="dev" id="devChart" aria-label="Gráfico de desvio por nota"></canvas>
-      <div class="chart-legend" style="margin-top:4px"><span class="early">adiantado</span><span>${res.hits} de ${res.total} notas</span></div>
+      <div class="chart-legend" style="margin-top:4px"><span class="early">adiantado</span><span>${res.hits} de ${res.total} notas ouvidas</span></div>
+      ${res.extras ? `<p class="muted small" style="margin-top:8px">${plural(res.extras, 'toque a mais foi ouvido', 'toques a mais foram ouvidos')} fora do padrão. Se você não tocou isso, pode ser barulho no ambiente ou o som do pad ressoando: afaste o celular de outras fontes de som.</p>` : ''}
       <div class="stats3"><div><div class="v">${res.consistency == null ? '—' : res.consistency + '%'}</div><div class="k">CONSISTÊNCIA</div></div>
         <div><div class="v">${res.meanAbsMs} ms</div><div class="k">DESVIO MÉDIO</div></div>${third}</div></div>
     <div class="card diag">${ICON.clock}<div><b>${diag.title}</b><p class="muted small" style="margin-top:3px">${diag.text}</p></div></div>
@@ -631,6 +668,7 @@ async function showSummary(w, gains) {
   const scored = w.blocks.filter(b => b.score != null);
   const avg = scored.length ? Math.round(scored.reduce((a, b) => a + b.score, 0) / scored.length) : null;
   const recs = gains.filter(g => g.newRecord);
+  track('workout_done', { avg: avg == null ? -1 : avg, streak: currentStreak(state, today()) });
   const tr = getTrail(state.trail), { stage } = currentStage(state, tr);
   let next = 'Prova da trilha';
   if (!stage.prova) {
@@ -697,11 +735,15 @@ async function runDiagnostic() {
     await recordSession('diag', rud, takes[k].bpm, out.res);
     scores.push(out.res.score);
   }
-  const tr = applyPlacement(state, scores);
+  const { trail: tr, placed } = applyPlacement(state, scores);
   state.today = null; trailView = null;
   await save(); setLevelColor();
+  track('diag_done', { placed: placed.id, min: Math.min(...scores) });
   setDots(takes.length + 1, takes.length + 1);
-  screen('DIAGNÓSTICO', `Sua trilha: ${tr.name}`, `Notas: ${scores.join(' e ')}. ${tr.id === 'iniciante' ? 'A trilha Iniciante constrói a base de singles, doubles e paradiddle.' : 'Sua base está firme: você começa direto na trilha Intermediário.'}`, false);
+  const why = tr.id !== placed.id ? `Você já tinha liberado a trilha ${tr.name}, então continua nela. Pra voltar a uma trilha anterior, use a aba Trilha.`
+    : tr.id === 'iniciante' ? 'A trilha Iniciante constrói a base de singles, doubles e paradiddle.'
+    : 'Sua base está firme: você começa direto na trilha Intermediário.';
+  screen('DIAGNÓSTICO', `Sua trilha: ${tr.name}`, `Notas: ${scores.join(' e ')}. ${why}`, false);
   await choose([{ id: 'ok', label: 'Ver meu treino do dia', primary: true }]);
   closeOverlay();
 }
@@ -737,8 +779,8 @@ function renderIntro() {
       <div class="kicker">METRÔNOMO · RUDIMENTOS · TREINO DIÁRIO</div>
       <h1>Um treino de bateria por dia, que ouve você tocar</h1>
       <p>O Batera no Click monta seu treino, escuta seus toques pelo microfone e mostra onde você corre ou atrasa. Grátis, direto no navegador, sem cadastro.</p>
-      <div class="stage" id="introStage"></div>
-      <div class="sheet"><div class="cells" id="introCells"></div></div>
+      <div class="hero-demo"><div class="stage" id="introStage"></div>
+      <div class="sheet"><div class="cells" id="introCells"></div></div></div>
       <div class="stack"><button class="btn-primary" data-act="start">Começar</button>
       <button class="btn-ghost" data-act="explore">Só explorar</button></div></div>
 
@@ -750,11 +792,11 @@ function renderIntro() {
     </div>
 
     <div class="sec-title">O que tem no app</div>
-    ${featCard('day', 'var(--ok)', 'Treino do dia', 'Quatro blocos montados pra você, que se ajustam ao seu resultado: acertou, o BPM sobe; errou, ele desce.')}
+    <div class="feat-grid">${featCard('day', 'var(--ok)', 'Treino do dia', 'Quatro blocos montados pra você, que se ajustam ao seu resultado: acertou, o BPM sobe; errou, ele desce.')}
     ${featCard('mic', 'var(--L)', 'Avaliação de timing', 'O app ouve cada toque e mostra nota a nota se você adiantou ou atrasou, e em qual tempo do padrão.', chart)}
     ${featCard('path', '#B98CFF', 'Trilhas por nível', 'Iniciante, Intermediário e Avançado, com estrelas por etapa e uma prova pra liberar o próximo nível.')}
     ${featCard('drum', 'var(--R)', 'Os 40 rudimentos', 'Todos os rudimentos PAS com baquetas animadas, sticking colorido e acentos destacados.')}
-    ${featCard('metro', 'var(--xp)', 'Metrônomo completo', 'Compassos, subdivisões, speed trainer, tap tempo e detecção do BPM de uma música.')}
+    ${featCard('metro', 'var(--xp)', 'Metrônomo completo', 'Compassos, subdivisões, speed trainer, tap tempo e detecção do BPM de uma música.')}</div>
 
     <div class="sec-title">Seu áudio não sai do celular</div>
     ${featCard('lock', 'var(--streak)', 'Privacidade', 'O microfone só mede o momento de cada toque: nada é gravado nem enviado. Seu progresso fica salvo no próprio aparelho.')}
@@ -777,6 +819,7 @@ function renderIntro() {
   el.onclick = e => {
     const a = e.target.closest('[data-act]'); if (!a) return;
     state.seenIntro = true; save();
+    track('intro_' + a.dataset.act);
     if (a.dataset.act === 'start' && !state.placed) { show('hoje'); runDiagnostic(); }
     else show('hoje');
   };
@@ -814,7 +857,7 @@ function renderFeedback() {
     </div>`;
   el.onclick = async e => {
     const a = e.target.closest('[data-act]'); if (!a) return;
-    if (a.dataset.act === 'back') { show('perfil'); return; }
+    if (a.dataset.act === 'back') { show(feedbackFrom); return; }
     if (a.dataset.act === 'send') sendFeedback();
   };
 }
@@ -844,6 +887,7 @@ async function sendFeedback() {
     const j = await r.json().catch(() => ({}));
     if (!r.ok || !j.success) throw new Error(j.message || 'falha');
     fbCooldown = Date.now() + 60000;
+    track('feedback_sent');
     $('#fbMsg').value = ''; $('#fbContact').value = '';
     say('Enviado. Obrigado pelo retorno!', true);
   } catch (err) {
@@ -886,6 +930,7 @@ function cleanState(raw) {
   }
   st.placed = raw.placed === true;
   st.seenIntro = true;
+  if (typeof raw.firstDay === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.firstDay)) st.firstDay = raw.firstDay;
   if (raw.calib && isNum(raw.calib.offset)) st.calib = { offset: raw.calib.offset, leakLatency: isNum(raw.calib.leakLatency) ? raw.calib.leakLatency : null, leakPeak: isNum(raw.calib.leakPeak) ? raw.calib.leakPeak : 0, at: isNum(raw.calib.at) ? raw.calib.at : Date.now() };
   return st;
 }
@@ -910,6 +955,7 @@ async function importBackup(file) {
     state = cleanState(data.state);
     for (const x of list) await addSession(x);
     sessions = await allSessions();
+    state.sessions = sessions.length; // o contador de avaliações acompanha o histórico restaurado
     trailView = null;
     await save();
     toast('Backup restaurado');
@@ -928,6 +974,10 @@ async function boot() {
     volatile = await isVolatile();
   } catch (e) { console.error('Falha ao carregar dados', e); }
   requestPersist();
+  // retenção: em que dia de uso a pessoa está (faixas, nunca a data em si)
+  if (!state.firstDay) { state.firstDay = today(); save(); }
+  const d = dayDiff(state.firstDay, today());
+  track('open', { since: d === 0 ? 'd0' : d === 1 ? 'd1' : d <= 7 ? 'd2-7' : d <= 30 ? 'd8-30' : 'd30+', installed: IS_STANDALONE ? 'sim' : 'nao' });
   initMetronome();
   document.querySelectorAll('.tabbar button').forEach(b => { b.onclick = () => show(b.dataset.view); });
   $('#streakChip').onclick = () => show('perfil');

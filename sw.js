@@ -1,8 +1,8 @@
 // Network-first: online sempre pega a versão nova; offline usa a última versão em cache.
-const CACHE = 'batera-v3';
+const CACHE = 'batera-v4';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/audio.js', '/mic.js', '/player.js',
   '/metronome.js', '/scoring.js', '/progress.js', '/workout.js', '/trails.js', '/rudiments-data.js',
-  '/storage.js', '/config.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+  '/storage.js', '/config.js', '/wakelock.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));

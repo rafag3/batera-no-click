@@ -52,6 +52,7 @@
   <section id="v-rud" class="view" aria-label="Rudimentos"></section>
 
   <section id="v-metro" class="view" aria-label="Metrônomo">
+   <div class="metro-cols"><div>
     <div class="card bpm-box">
       <div class="bpm-num" id="bpmNum">120</div>
       <div class="muted small">BPM · arraste o número pro lado</div>
@@ -65,6 +66,8 @@
       <button class="btn-primary" id="btnStart">Tocar</button>
       <button class="btn-ghost" id="btnTap">Tap tempo</button>
     </div>
+    <p class="muted small desk-only" style="margin-top:10px;text-align:center">Atalhos: <kbd>espaço</kbd> toca e para, <kbd>T</kbd> marca o tap tempo</p>
+   </div><div>
     <div class="ctrl-grid">
       <label class="ctrl">Compasso
         <select id="selSig">
@@ -117,6 +120,7 @@
         <p class="muted small">A análise roda no aparelho, nada é enviado. Funciona melhor com batida marcada; confira com o tap tempo.</p>
       </div>
     </details>
+   </div></div>
   </section>
 
   <section id="v-perfil" class="view" aria-label="Perfil"></section>

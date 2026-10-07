@@ -1,5 +1,5 @@
 // Monta o treino do dia (4 blocos) a partir do estado e do histórico. Função pura.
-import { getTrail } from './trails.js';
+import { getTrail, trailIndex } from './trails.js';
 import { currentStage, stageWork, stageUnlocked, dayDiff, addDays, CLEAN_MIN } from './progress.js';
 import { clamp } from './scoring.js';
 
@@ -61,8 +61,12 @@ export function buildWorkout(state, sessions, today) {
     blocks.push({ kind: 'fraco', label: 'Ponto fraco', rud: weak.rud, bpm: clamp(weak.bpm, 40, 220) });
   } else {
     // sem histórico suficiente: revisa a etapa anterior já liberada
+    // na 1ª etapa da trilha Iniciante ainda não há nada liberado pra revisar: usa colcheias, o exercício mais básico
     const prev = trail.stages.slice(0, index).reverse().find((s, k) => !s.prova && stageUnlocked(state, trail, index - 1 - k));
-    const rud = prev ? prev.rud : trail.tracked.find(r => r !== focusRud && r !== 'single-stroke-roll') || trail.tracked[0];
+    const first = trailIndex(trail.id) === 0;
+    const rud = prev ? prev.rud
+      : first ? 'colcheias'
+      : trail.tracked.find(r => r !== focusRud && r !== 'single-stroke-roll') || trail.tracked[0];
     const bpm = prev ? prev.bpm : focusBpm;
     blocks.push({ kind: 'fraco', label: 'Revisão', rud, bpm });
   }

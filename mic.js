@@ -2,7 +2,10 @@
 import { ensureAC, ctx } from './audio.js';
 
 let stream = null, proc = null, src = null, sink = null;
-let collecting = false, onsets = [], noise = 0.005, lastT = -1, refr = 0.07;
+let collecting = false, onsets = [], noise = 0.005, lastT = -1, refr = 0.07, prevPeak = 0;
+// Um ataque precisa subir em relação ao bloco anterior: assim a cauda de um toque forte
+// (que decai ao longo de ~100 ms) não vira um toque falso depois do período refratário.
+const RISE = 1.2;
 
 export function micActive() { return !!stream; }
 
@@ -34,7 +37,9 @@ export async function ensureMic() {
     rms = Math.sqrt(rms / d.length);
     const thr = Math.max(0.04, noise * 5);
     if (peak < thr) noise = noise * 0.97 + rms * 0.03; // ruído de fundo adaptativo
-    if (!collecting || peak < thr) return;
+    const rising = peak > prevPeak * RISE;
+    prevPeak = peak;
+    if (!collecting || peak < thr || !rising) return;
     const base = e.playbackTime > 0 ? e.playbackTime : AC.currentTime;
     const t = base + pi / AC.sampleRate; // atraso fixo é compensado pela calibração
     if (t - lastT > refr) { lastT = t; onsets.push({ t, peak }); }
@@ -56,4 +61,5 @@ export function releaseMic() {
   if (proc) { proc.onaudioprocess = null; try { proc.disconnect(); src.disconnect(); sink.disconnect(); } catch (e) { /* ignora */ } }
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = proc = src = sink = null;
+  prevPeak = 0;
 }

@@ -54,7 +54,7 @@ export function scoreTake({ expected, onsets, clickTimes = [], calib = null, int
     .filter(t => t > first - win && t < last + win);
   const { devs, extras } = matchOnsets(expected.map(e => e.t), ons, win);
   const hit = devs.filter(d => d !== null);
-  const base = { total, hits: hit.length, devs, win };
+  const base = { total, hits: hit.length, extras, devs, win };
   if (hit.length === 0) {
     return { ...base, score: 0, hitRate: 0, consistency: null, meanAbsMs: null, tendencyMs: null, worst: null };
   }
@@ -157,4 +157,16 @@ export function analyzePlay(clickTimes, onsets, leak) {
   const hit = devs.filter(d => d !== null);
   if (hit.length < 4) return null;
   return median(hit);
+}
+
+// Decide o offset de latência. Quando o click vaza pro microfone, o atraso do vazamento
+// é a latência real do aparelho (saída + entrada) e não carrega o vício de tempo de quem
+// tocou na calibração. Sem vazamento (fone), só resta a medida tocada.
+// Retorna também o viés de quem tocou (negativo = correu), quando dá pra separar.
+export function resolveCalibration(playOffset, leak) {
+  if (playOffset == null) return null;
+  if (leak && leak.leakLatency != null) {
+    return { offset: leak.leakLatency, source: 'leak', biasMs: Math.round((playOffset - leak.leakLatency) * 1000) };
+  }
+  return { offset: playOffset, source: 'play', biasMs: null };
 }
