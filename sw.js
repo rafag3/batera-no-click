@@ -1,8 +1,8 @@
 // Network-first: online sempre pega a versão nova; offline usa a última versão em cache.
-const CACHE = 'batera-v2';
+const CACHE = 'batera-v3';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/audio.js', '/mic.js', '/player.js',
   '/metronome.js', '/scoring.js', '/progress.js', '/workout.js', '/trails.js', '/rudiments-data.js',
-  '/storage.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
+  '/storage.js', '/config.js', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -17,6 +17,7 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   const sameOrigin = url.origin === location.origin;
+  if (sameOrigin && url.pathname.startsWith('/_vercel/')) return; // analytics da Vercel: não cachear
   const isFont = url.hostname.endsWith('fonts.googleapis.com') || url.hostname.endsWith('fonts.gstatic.com');
   if (!sameOrigin && !isFont) return;
   e.respondWith(

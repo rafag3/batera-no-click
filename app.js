@@ -12,11 +12,19 @@ import { ensureAC, stopAll } from './audio.js';
 import { ensureMic, releaseMic } from './mic.js';
 import { renderCells, renderStage, playLoop, runTake, runClicks, repsFor } from './player.js';
 import { initMetronome } from './metronome.js';
+import { FEEDBACK_KEY } from './config.js';
 
 const $ = s => document.querySelector(s);
 const today = () => dayKey();
 let state = newState(), sessions = [];
-let view = 'hoje', trailView = null, rudDetail = null, rudBpm = 60, volatile = false;
+let view = 'hoje', trailView = null, rudDetail = null, rudBpm = 60, volatile = false, introTimer = null;
+
+// texto vindo de backup importado nunca entra cru no HTML
+const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const UA = navigator.userAgent;
+const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);
+const IS_ANDROID = /Android/.test(UA);
+const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
 // ---------- utilidades de UI ----------
 const ICON = {
@@ -48,13 +56,16 @@ function ensureToday() {
 }
 
 // ---------- navegação ----------
-function show(v) {
+function show(v, anchor) {
   view = v;
+  clearInterval(introTimer); introTimer = null;
+  document.body.classList.toggle('intro-mode', v === 'intro');
   document.querySelectorAll('.view').forEach(s => s.classList.toggle('on', s.id === 'v-' + v));
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
   stopAll();
   render();
-  window.scrollTo(0, 0);
+  const target = anchor && document.getElementById(anchor);
+  if (target) target.scrollIntoView(); else window.scrollTo(0, 0);
 }
 
 function render() {
@@ -66,6 +77,8 @@ function render() {
   else if (view === 'trilha') renderTrilha();
   else if (view === 'rud') renderRud();
   else if (view === 'perfil') renderPerfil();
+  else if (view === 'intro') renderIntro();
+  else if (view === 'feedback') renderFeedback();
 }
 
 // ---------- HOJE ----------
@@ -110,6 +123,12 @@ function renderHoje() {
   const mins = w.blocks.reduce((a, b) => a + blockMinutes(b), 0);
   let h = '';
 
+  if ((IS_IOS || IS_ANDROID) && !IS_STANDALONE) {
+    h += `<div class="card banner"><div style="flex:1"><b>Instale o app na tela inicial</b>
+      <p>${IS_IOS ? 'No Safari, o iPhone apaga os dados de sites que ficam 7 dias sem uso. Instalado, seu progresso fica protegido.' : 'Assim ele abre em tela cheia e seu progresso fica protegido.'}</p></div>
+      <button data-act="install">Como?</button></div>`;
+  }
+
   if (!state.placed) {
     h += `<div class="card onboard">
       <div class="h2">Comece pelo diagnóstico</div>
@@ -141,8 +160,8 @@ function renderHoje() {
 
   const last = [...sessions].reverse().find(s => s.diagTitle);
   if (last) {
-    h += `<div class="card diag">${ICON.clock}<div><b>${last.diagTitle}</b>
-      <p class="muted small" style="margin-top:3px">${getRud(last.rud).n}: ${last.diagText}</p></div></div>`;
+    h += `<div class="card diag">${ICON.clock}<div><b>${esc(last.diagTitle)}</b>
+      <p class="muted small" style="margin-top:3px">${getRud(last.rud).n}: ${esc(last.diagText)}</p></div></div>`;
   }
 
   h += `<div class="sec-head"><span class="kicker">BPM LIMPO</span><span class="muted small">últimos 30 dias</span></div>
@@ -153,7 +172,8 @@ function renderHoje() {
         <div class="v">${ch.current || '—'}</div>${ch.current ? sparkline(ch.points) : '<svg viewBox="0 0 100 26"></svg>'}
         <div class="d${ch.delta ? '' : ' zero'}">${ch.current ? (ch.delta ? '+' + ch.delta : 'estável') : 'sem registro'}</div></div>`;
     }).join('')}</div>
-    <p class="muted small" style="margin-top:10px">BPM limpo é o maior andamento em que você tocou o rudimento com 85 ou mais de precisão.</p>`;
+    <p class="muted small" style="margin-top:10px">BPM limpo é o maior andamento em que você tocou o rudimento com 85 ou mais de precisão.</p>
+    <div style="text-align:center;margin-top:18px"><button class="link-btn" data-act="feedback">Achou um erro ou tem uma sugestão? Fale comigo</button></div>`;
 
   el.innerHTML = h;
   el.onclick = e => {
@@ -161,6 +181,8 @@ function renderHoje() {
     if (a.dataset.act === 'daily') runDaily();
     if (a.dataset.act === 'diag') runDiagnostic();
     if (a.dataset.act === 'skipdiag') { state.placed = true; save(); render(); }
+    if (a.dataset.act === 'install') show('intro', 'install');
+    if (a.dataset.act === 'feedback') show('feedback');
   };
 }
 
@@ -282,14 +304,28 @@ async function renderPerfil() {
       ${c && c.leakLatency != null ? '<p class="muted small" style="margin-top:6px">O click vaza do alto-falante pro microfone. O app descarta esse som, mas com fone com fio a avaliação fica mais precisa.</p>' : ''}
       <div class="stack"><button class="btn-ghost" data-act="calib">${c ? 'Calibrar de novo' : 'Calibrar agora'}</button></div></div>
     <div class="card"><div class="kicker">SEUS DADOS</div>
-      <p class="muted small" style="margin-top:8px">O progresso fica salvo só neste aparelho. Apagar o atalho da tela inicial ou os dados do navegador apaga o progresso junto. Nenhum áudio é gravado.</p>
+      <p class="muted small" style="margin-top:8px">O progresso fica salvo só neste aparelho. Apagar o atalho da tela inicial ou os dados do navegador apaga o progresso junto. Faça um backup de vez em quando: o arquivo também serve pra levar o progresso pra outro celular.</p>
       ${volatile ? '<p class="small" style="margin-top:8px;color:var(--bad)">Este navegador não permite salvar dados (modo privado?). O progresso some ao fechar.</p>' : ''}
-      <div class="stack"><button class="btn-ghost" data-act="rediag">Refazer diagnóstico</button>
-      <button class="btn-ghost danger" data-act="wipe">Apagar meus dados</button></div></div>`;
+      <div class="stack"><button class="btn-ghost" data-act="export">Fazer backup</button>
+      <button class="btn-ghost" data-act="import">Restaurar backup</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <button class="btn-ghost" data-act="rediag">Refazer diagnóstico</button>
+      <button class="btn-ghost danger" data-act="wipe">Apagar meus dados</button></div></div>
+    <div class="card"><div class="kicker">SOBRE</div>
+      <div class="stack"><button class="btn-ghost" data-act="feedback">Enviar feedback</button>
+      <button class="btn-ghost" data-act="intro">Conhecer o app</button></div></div>
+    <div class="card"><div class="kicker">PRIVACIDADE</div>
+      <p class="muted small" style="margin-top:8px">O áudio do microfone é analisado na hora e descartado: nada é gravado nem enviado. O progresso fica só neste aparelho. As visitas são contadas de forma anônima e sem cookies (Vercel Web Analytics). O feedback só sai quando você toca em Enviar, e vai por e-mail pelo serviço Web3Forms.</p></div>`;
+  const inp = $('#importFile');
+  inp.onchange = () => { const f = inp.files[0]; inp.value = ''; if (f) importBackup(f); };
   el.onclick = async e => {
     const a = e.target.closest('[data-act]'); if (!a) return;
     if (a.dataset.act === 'calib') runCalibOnly();
     if (a.dataset.act === 'rediag') runDiagnostic();
+    if (a.dataset.act === 'feedback') show('feedback');
+    if (a.dataset.act === 'intro') show('intro');
+    if (a.dataset.act === 'export') exportBackup();
+    if (a.dataset.act === 'import') $('#importFile').click();
     if (a.dataset.act === 'wipe' && confirm('Apagar todo o progresso deste aparelho? Não dá pra desfazer.')) {
       await clearAll(); state = newState(); sessions = []; trailView = null; await save(); toast('Dados apagados'); render();
     }
@@ -596,14 +632,18 @@ async function showSummary(w, gains) {
   const avg = scored.length ? Math.round(scored.reduce((a, b) => a + b.score, 0) / scored.length) : null;
   const recs = gains.filter(g => g.newRecord);
   const tr = getTrail(state.trail), { stage } = currentStage(state, tr);
-  const next = stage.prova ? 'Prova da trilha' : `${getRud(stage.rud).n} a ${stageWork(state, stage).bpm} BPM`;
+  let next = 'Prova da trilha';
+  if (!stage.prova) {
+    const wb = stageWork(state, stage).bpm;
+    next = `${getRud(stage.rud).n} a ${wb} BPM` + (wb < stage.bpm ? `, rumo à meta de ${stage.bpm}` : '');
+  }
   await save();
   $('#sBody').innerHTML = `<div class="done-hero"><div class="check">${ICON.check}</div>
       <div class="h1" style="margin-top:14px">Treino concluído</div>
       <p class="muted small" style="margin-top:4px">${plural(scored.length, 'bloco avaliado', 'blocos avaliados')}</p></div>
     ${avg != null ? `<div class="card" style="text-align:center"><div class="kicker">PRECISÃO MÉDIA</div><div class="score" style="font-family:var(--display);font-size:52px;color:${scoreColor(avg)}">${avg}</div></div>` : ''}
     <div class="reward-grid"><div class="reward xp"><div class="v">+${xp} XP</div><div class="muted small">neste treino</div></div>
-      <div class="reward st"><div class="v">${plural(currentStreak(state, today()), 'dia', 'dias')}</div><div class="muted small">sequência mantida</div></div></div>
+      <div class="reward st"><div class="v">${plural(currentStreak(state, today()), 'dia', 'dias')}</div><div class="muted small">${currentStreak(state, today()) === 1 ? 'sequência iniciada' : 'sequência mantida'}</div></div></div>
     ${recs.map(r => `<div class="card note-ok"><b>Novo BPM limpo: ${r.rud} a ${r.cleanBpm}</b></div>`).join('')}
     <div class="card"><div class="kicker">AMANHÃ</div><p style="margin-top:6px;line-height:1.45">${next}.</p></div>
     <div class="actions" id="sActions"></div>`;
@@ -666,6 +706,219 @@ async function runDiagnostic() {
   closeOverlay();
 }
 
+// =================== APRESENTAÇÃO ===================
+const FEAT_ICON = {
+  day: '<svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M9 15l2 2 4-4"/></svg>',
+  mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+  path: '<svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h7a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/></svg>',
+  drum: '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="15" rx="9" ry="4"/><path d="M3 15v-3c0-2.2 4-4 9-4s9 1.8 9 4v3M6 3l5 7M18 3l-5 7"/></svg>',
+  metro: '<svg viewBox="0 0 24 24"><path d="M9 3h6l4 18H5z"/><path d="M12 15l5-8"/></svg>',
+  lock: '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+};
+function featCard(icon, color, title, text, extra = '') {
+  return `<div class="card"><div class="feat"><div class="ic" style="background:${color}">${FEAT_ICON[icon]}</div>
+    <div style="flex:1"><b>${title}</b><p>${text}</p></div></div>${extra}</div>`;
+}
+function renderIntro() {
+  const el = $('#v-intro');
+  const bars = [6, -4, 9, -14, 3, 7, -5, -12, -2, 4, 8, -15, 6, -3, 2, -11];
+  const chart = `<svg class="feat-chart" viewBox="0 0 320 64" preserveAspectRatio="none" aria-hidden="true">
+    <line x1="0" y1="32" x2="320" y2="32" stroke="#3A3450"/>${bars.map((d, i) => {
+      const x = 8 + i * 19.4, hgt = Math.abs(d) * 1.8;
+      return `<rect x="${x}" y="${d > 0 ? 32 - hgt : 32}" width="11" height="${hgt}" rx="2" fill="${d > 0 ? '#FF8A2B' : '#3EB8F0'}"/>`;
+    }).join('')}</svg>`;
+  let install;
+  if (IS_STANDALONE) install = '<p class="ok" style="margin-top:8px">Você já está usando o app instalado.</p>';
+  else if (IS_IOS) install = `<ol><li>Abra este site no <b>Safari</b>.</li><li>Toque no botão <b>Compartilhar</b> (quadrado com seta pra cima).</li><li>Escolha <b>Adicionar à Tela de Início</b> e confirme.</li></ol>`;
+  else if (IS_ANDROID) install = `<ol><li>Abra este site no <b>Chrome</b>.</li><li>Toque no menu <b>⋮</b> no canto superior.</li><li>Escolha <b>Instalar app</b> ou <b>Adicionar à tela inicial</b>.</li></ol>`;
+  else install = `<p class="muted small" style="margin-top:8px">No celular, abra este endereço e adicione à tela inicial: no iPhone pelo botão Compartilhar do Safari, no Android pelo menu do Chrome.</p>`;
+
+  el.innerHTML = `<div class="hero">
+      <div class="kicker">METRÔNOMO · RUDIMENTOS · TREINO DIÁRIO</div>
+      <h1>Um treino de bateria por dia, que ouve você tocar</h1>
+      <p>O Batera no Click monta seu treino, escuta seus toques pelo microfone e mostra onde você corre ou atrasa. Grátis, direto no navegador, sem cadastro.</p>
+      <div class="stage" id="introStage"></div>
+      <div class="sheet"><div class="cells" id="introCells"></div></div>
+      <div class="stack"><button class="btn-primary" data-act="start">Começar</button>
+      <button class="btn-ghost" data-act="explore">Só explorar</button></div></div>
+
+    <div class="sec-title">Como funciona</div>
+    <div class="steps">
+      <div class="step"><span class="n">1</span><div><b>Calibre o microfone</b><p>30 segundos, com o celular perto do pad ou da caixa.</p></div></div>
+      <div class="step"><span class="n">2</span><div><b>Faça o treino do dia</b><p>Uns 10 minutos: aquecimento, foco da trilha, ponto fraco e um desafio.</p></div></div>
+      <div class="step"><span class="n">3</span><div><b>Acompanhe sua evolução</b><p>Nota de precisão, diagnóstico de onde você erra e seu BPM limpo subindo semana a semana.</p></div></div>
+    </div>
+
+    <div class="sec-title">O que tem no app</div>
+    ${featCard('day', 'var(--ok)', 'Treino do dia', 'Quatro blocos montados pra você, que se ajustam ao seu resultado: acertou, o BPM sobe; errou, ele desce.')}
+    ${featCard('mic', 'var(--L)', 'Avaliação de timing', 'O app ouve cada toque e mostra nota a nota se você adiantou ou atrasou, e em qual tempo do padrão.', chart)}
+    ${featCard('path', '#B98CFF', 'Trilhas por nível', 'Iniciante, Intermediário e Avançado, com estrelas por etapa e uma prova pra liberar o próximo nível.')}
+    ${featCard('drum', 'var(--R)', 'Os 40 rudimentos', 'Todos os rudimentos PAS com baquetas animadas, sticking colorido e acentos destacados.')}
+    ${featCard('metro', 'var(--xp)', 'Metrônomo completo', 'Compassos, subdivisões, speed trainer, tap tempo e detecção do BPM de uma música.')}
+
+    <div class="sec-title">Seu áudio não sai do celular</div>
+    ${featCard('lock', 'var(--streak)', 'Privacidade', 'O microfone só mede o momento de cada toque: nada é gravado nem enviado. Seu progresso fica salvo no próprio aparelho.')}
+
+    <div class="sec-title" id="install">Instale na tela inicial</div>
+    <div class="card install"><p class="muted small">Instalado, o app abre em tela cheia, funciona sem internet e o seu progresso fica protegido.</p>${install}</div>
+
+    <div class="stack" style="margin:28px 0 12px"><button class="btn-primary" data-act="start">Começar agora</button></div>`;
+
+  // demonstração silenciosa: paradiddle animado
+  const rud = getRud('single-paradiddle');
+  const cells = renderCells($('#introCells'), rud);
+  const stg = renderStage($('#introStage'));
+  let i = 0;
+  introTimer = setInterval(() => {
+    const k = i % rud.tokens.length, t = rud.tokens[k];
+    cells.highlight(k); stg.strike(t.hand, t.acc); i++;
+  }, 190);
+
+  el.onclick = e => {
+    const a = e.target.closest('[data-act]'); if (!a) return;
+    state.seenIntro = true; save();
+    if (a.dataset.act === 'start' && !state.placed) { show('hoje'); runDiagnostic(); }
+    else show('hoje');
+  };
+}
+
+// =================== FEEDBACK ===================
+let fbCooldown = 0;
+function techInfo() {
+  const c = state.calib;
+  const last = sessions.slice(-5).map(x => `${x.rud} ${x.bpm}bpm nota ${x.score}`).join('; ');
+  return [
+    `Navegador: ${UA}`,
+    `Instalado: ${IS_STANDALONE ? 'sim' : 'não'}`,
+    `Calibração: ${c ? `${Math.round(c.offset * 1000)} ms, vazamento ${c.leakLatency != null ? 'sim' : 'não'}` : 'não feita'}`,
+    `Trilha: ${state.trail}, avaliações: ${state.sessions}`,
+    `Últimas: ${last || 'nenhuma'}`,
+  ].join('\n');
+}
+function renderFeedback() {
+  const el = $('#v-feedback');
+  el.innerHTML = `<button class="back" data-act="back">‹ Voltar</button>
+    <div class="h1" style="margin-top:4px">Enviar feedback</div>
+    <p class="muted small" style="margin-top:6px">Vai direto pro criador do app. Nota que pareceu injusta, erro, ideia: tudo ajuda.</p>
+    <div class="form">
+      <label>Assunto<select id="fbType">
+        <option>A nota da avaliação pareceu errada</option><option>Encontrei um erro</option>
+        <option>Sugestão</option><option>Outro</option></select></label>
+      <label>Mensagem<textarea id="fbMsg" maxlength="2000" placeholder="Conte o que aconteceu ou o que você gostaria de ver no app"></textarea></label>
+      <label>Seu contato (opcional)<input id="fbContact" maxlength="120" autocomplete="email" placeholder="E-mail ou @instagram, se quiser resposta"></label>
+      <label class="check"><input type="checkbox" id="fbTech" checked> Incluir dados técnicos (navegador, calibração e últimas notas)</label>
+      <input type="checkbox" id="fbBot" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <button class="btn-primary" data-act="send" id="fbSend">Enviar</button>
+      <p class="small" id="fbStatus" role="status"></p>
+      <p class="muted small">O envio usa o serviço Web3Forms. Vai só o que estiver neste formulário; o contato é opcional.</p>
+    </div>`;
+  el.onclick = async e => {
+    const a = e.target.closest('[data-act]'); if (!a) return;
+    if (a.dataset.act === 'back') { show('perfil'); return; }
+    if (a.dataset.act === 'send') sendFeedback();
+  };
+}
+async function sendFeedback() {
+  const st = $('#fbStatus'), btn = $('#fbSend');
+  const msg = $('#fbMsg').value.trim(), contact = $('#fbContact').value.trim();
+  const say = (t, ok) => { st.textContent = t; st.style.color = ok ? 'var(--ok)' : 'var(--bad)'; };
+  if (!FEEDBACK_KEY) { say('O formulário ainda não foi configurado.', false); return; }
+  if (msg.length < 5) { say('Escreva pelo menos uma frase.', false); return; }
+  if (Date.now() < fbCooldown) { say('Aguarde um minuto antes de enviar de novo.', false); return; }
+  const body = {
+    access_key: FEEDBACK_KEY,
+    subject: 'Batera no Click: ' + $('#fbType').value,
+    from_name: 'Batera no Click',
+    assunto: $('#fbType').value,
+    mensagem: msg,
+    contato: contact || '(não informado)',
+    dados_tecnicos: $('#fbTech').checked ? techInfo() : '(não incluídos)',
+    botcheck: $('#fbBot').checked,
+  };
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact)) body.replyto = contact;
+  btn.disabled = true; say('Enviando…', true);
+  try {
+    const r = await fetch('https://api.web3forms.com/submit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.success) throw new Error(j.message || 'falha');
+    fbCooldown = Date.now() + 60000;
+    $('#fbMsg').value = ''; $('#fbContact').value = '';
+    say('Enviado. Obrigado pelo retorno!', true);
+  } catch (err) {
+    say(navigator.onLine ? 'Não foi possível enviar agora. Tente de novo em instantes.' : 'Sem internet. Conecte e tente de novo.', false);
+  } finally { btn.disabled = false; }
+}
+
+// =================== BACKUP ===================
+async function exportBackup() {
+  const data = { app: 'batera-no-click', v: 1, exportedAt: new Date().toISOString(), state, sessions };
+  const name = `batera-no-click-backup-${today()}.json`;
+  const file = new File([JSON.stringify(data)], name, { type: 'application/json' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Backup do Batera no Click' }); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(file), link = document.createElement('a');
+  link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  toast('Backup salvo');
+}
+
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const validRud = id => { try { getRud(id); return true; } catch (e) { return false; } };
+function cleanState(raw) {
+  const st = newState();
+  if (!raw || typeof raw !== 'object') return st;
+  if (isNum(raw.xp) && raw.xp >= 0) st.xp = Math.floor(raw.xp);
+  if (raw.xpDay && isNum(raw.xpDay.xp) && typeof raw.xpDay.day === 'string') st.xpDay = { day: raw.xpDay.day, xp: raw.xpDay.xp };
+  if (raw.streak && isNum(raw.streak.count)) st.streak = { count: raw.streak.count, last: typeof raw.streak.last === 'string' ? raw.streak.last : null, freezeWeek: typeof raw.streak.freezeWeek === 'string' ? raw.streak.freezeWeek : null };
+  const trailIds = TRAILS.map(t => t.id);
+  if (trailIds.includes(raw.trail)) st.trail = raw.trail;
+  if (Array.isArray(raw.unlocked)) st.unlocked = [...new Set(['iniciante', ...raw.unlocked.filter(x => trailIds.includes(x))])];
+  if (!st.unlocked.includes(st.trail)) st.trail = 'iniciante';
+  for (const [id, w] of Object.entries(raw.stages || {})) {
+    if (findStage(id) && w && isNum(w.stars)) st.stages[id] = { stars: Math.min(3, Math.max(0, w.stars)), best: isNum(w.best) ? w.best : 0, bpm: isNum(w.bpm) ? w.bpm : null, hist: Array.isArray(w.hist) ? w.hist.filter(isNum).slice(-3) : [] };
+  }
+  for (const [id, r] of Object.entries(raw.records || {})) {
+    if (validRud(id) && r && isNum(r.clean)) st.records[id] = { clean: r.clean, best: isNum(r.best) ? r.best : 0 };
+  }
+  st.placed = raw.placed === true;
+  st.seenIntro = true;
+  if (raw.calib && isNum(raw.calib.offset)) st.calib = { offset: raw.calib.offset, leakLatency: isNum(raw.calib.leakLatency) ? raw.calib.leakLatency : null, leakPeak: isNum(raw.calib.leakPeak) ? raw.calib.leakPeak : 0, at: isNum(raw.calib.at) ? raw.calib.at : Date.now() };
+  return st;
+}
+function cleanSession(x) {
+  if (!x || typeof x !== 'object' || !validRud(x.rud) || !isNum(x.bpm) || !isNum(x.score) || typeof x.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(x.day)) return null;
+  const str = v => (typeof v === 'string' ? v.slice(0, 300) : null);
+  return {
+    ts: isNum(x.ts) ? x.ts : Date.now(), day: x.day, kind: str(x.kind) || 'livre', rud: x.rud, bpm: x.bpm, spb: isNum(x.spb) ? x.spb : getRud(x.rud).spb,
+    score: x.score, consistency: isNum(x.consistency) ? x.consistency : null, meanAbsMs: isNum(x.meanAbsMs) ? x.meanAbsMs : null,
+    tendencyMs: isNum(x.tendencyMs) ? x.tendencyMs : null, diagTitle: str(x.diagTitle), diagText: str(x.diagText),
+    stageId: findStage(x.stageId) ? x.stageId : null, gap: null,
+  };
+}
+async function importBackup(file) {
+  try {
+    if (file.size > 5 * 1024 * 1024) throw new Error('grande');
+    const data = JSON.parse(await file.text());
+    if (!data || data.app !== 'batera-no-click' || !Array.isArray(data.sessions)) throw new Error('formato');
+    const list = data.sessions.map(cleanSession).filter(Boolean);
+    if (!confirm(`Substituir o progresso deste aparelho pelo backup (${list.length} avaliações)? O progresso atual será apagado.`)) return;
+    await clearAll();
+    state = cleanState(data.state);
+    for (const x of list) await addSession(x);
+    sessions = await allSessions();
+    trailView = null;
+    await save();
+    toast('Backup restaurado');
+    render();
+  } catch (e) {
+    toast('Arquivo inválido. Use um backup gerado pelo Batera no Click.');
+  }
+}
+
 // ---------- inicialização ----------
 async function boot() {
   try {
@@ -678,7 +931,7 @@ async function boot() {
   initMetronome();
   document.querySelectorAll('.tabbar button').forEach(b => { b.onclick = () => show(b.dataset.view); });
   $('#streakChip').onclick = () => show('perfil');
-  render();
+  if (!state.seenIntro) show('intro'); else render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   }

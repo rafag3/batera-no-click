@@ -4,7 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#110F17">
-<title>Batera no Click</title>
+<title>Batera no Click — treino diário de bateria</title>
+<meta name="description" content="Metrônomo, os 40 rudimentos e um treino diário que avalia seu timing pelo microfone. Grátis, direto no navegador.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://batera-no-click.vercel.app/">
+<meta property="og:site_name" content="Batera no Click">
+<meta property="og:title" content="Batera no Click — treino diário de bateria">
+<meta property="og:description" content="Metrônomo, os 40 rudimentos e um treino diário que avalia seu timing pelo microfone. Grátis, direto no navegador.">
+<meta property="og:image" content="https://batera-no-click.vercel.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="pt_BR">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -34,7 +45,9 @@
 </header>
 
 <main>
+  <section id="v-intro" class="view" aria-label="Conheça o app"></section>
   <section id="v-hoje" class="view on" aria-label="Hoje"></section>
+  <section id="v-feedback" class="view" aria-label="Enviar feedback"></section>
   <section id="v-trilha" class="view" aria-label="Trilha"></section>
   <section id="v-rud" class="view" aria-label="Rudimentos"></section>
 
@@ -135,6 +148,9 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<!-- Vercel Web Analytics: contagem anônima de visitas, sem cookies -->
+<script>window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };</script>
+<script defer src="/_vercel/insights/script.js"></script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>
